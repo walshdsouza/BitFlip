@@ -28,6 +28,7 @@ from dccn.framer import text_to_bits
 from dccn.noise import NoiseInjector
 from dccn.stats import Stats
 from dccn.transport import PeerTransport, PortInUseError
+from dccn.webserver import DashboardServer
 
 HELP = """Commands:
   <text>            send a message to the peer
@@ -54,7 +55,7 @@ class Node:
                  delay: float = config.DEFAULT_DELAY, timeout: float = config.DEFAULT_TIMEOUT,
                  max_payload: int = config.MAX_PAYLOAD, max_retries: int = config.MAX_RETRIES,
                  color: bool = True, bind_host: str = "0.0.0.0", echo: bool = True,
-                 noise: NoiseInjector | None = None) -> None:
+                 noise: NoiseInjector | None = None, web_port: int | None = None) -> None:
         self.name = name
         self.peer = f"{peer_host}:{peer_port}"
         self.listen_port = listen_port
@@ -73,12 +74,23 @@ class Node:
                                        on_link_change=self._on_link_change,
                                        bind_host=bind_host)
         self.ctx.transport = self.transport
+        self.web_port = web_port
+        self.web: DashboardServer | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        """Open the listening socket (may raise PortInUseError) and start all threads."""
-        self.transport.start()
+        """Open the listening socket and dashboard (may raise PortInUseError), start threads."""
+        if self.web_port:
+            self.web = DashboardServer(self, self.web_port)
+        try:
+            self.transport.start()
+        except PortInUseError:
+            if self.web:
+                self.web.stop()
+            raise
         self.sender.start()
+        if self.web:
+            self.web.start()
 
     def stop(self) -> None:
         """Graceful shutdown: stop the ARQ worker, close sockets."""
@@ -86,6 +98,8 @@ class Node:
         self.sender.stop()
         self.transport.stop()
         self.bus.close_subscribers()
+        if self.web:
+            self.web.stop()
 
     def _on_link_change(self, direction: str, up: bool) -> None:
         if direction == "incoming" and up:
@@ -226,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     peer_host, peer_port = args.peer
     node = Node(args.name, args.listen, peer_host, peer_port, delay=args.delay,
                 timeout=args.timeout, max_payload=args.max_payload,
-                color=not args.no_color, bind_host=args.bind)
+                color=not args.no_color, bind_host=args.bind, web_port=args.web)
     try:
         node.start()
     except PortInUseError as exc:
@@ -235,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     node.bus.print_line(f"Node {args.name} listening on {args.bind}:{args.listen}, "
                         f"peer {peer_host}:{peer_port}, ARQ timeout "
                         f"{node.sender.effective_timeout:.1f}s. Type /help for commands.")
+    if node.web:
+        node.bus.print_line(f"Dashboard: {node.web.url}")
     try:
         for line in sys.stdin:
             if not node.handle_line(line):

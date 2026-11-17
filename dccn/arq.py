@@ -66,14 +66,24 @@ def frame_view(frame: BuiltFrame, wire: str | None = None, flipped: list[int] | 
     return {"wire": wire if wire is not None else frame.wire,
             "segments": frame.segments,
             "stuffed": frame.wire_stuffed_positions,
-            "flipped": flipped or []}
+            "flipped": flipped or [],
+            "fields": {"type": frame.kind, "seq": frame.seq, "len": len(frame.payload),
+                       "payload": frame.payload.decode("utf-8", "replace"),
+                       "crc": f"0x{int(frame.crc_bits, 2):04X}"}}
 
 
 def parsed_view(frame: ParsedFrame) -> dict:
-    """Same as :func:`frame_view` for a received frame."""
+    """Same as :func:`frame_view` for a received frame (fields only if it parsed cleanly)."""
+    fields = None
+    if frame.ok:
+        crc_bits = frame.body[-config.CRC_BITS:]
+        fields = {"type": frame.kind, "seq": frame.seq, "len": len(frame.payload),
+                  "payload": frame.payload.decode("utf-8", "replace"),
+                  "crc": f"0x{int(crc_bits, 2):04X}"}
     return {"wire": frame.wire, "segments": frame.segments,
             "stuffed": [p + len(config.FLAG) for p in frame.removed_positions],
-            "corrected": [p + len(config.FLAG) for p in frame.corrected_raw_positions]}
+            "corrected": [p + len(config.FLAG) for p in frame.corrected_raw_positions],
+            "fields": fields}
 
 
 # ======================================================================================

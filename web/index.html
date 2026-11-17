@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BitFlip Node</title>
+  <meta name="description" content="Live dashboard of one DCCN peer: framing, CRC, noise and Stop-and-Wait ARQ.">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- ============================== HEADER ============================== -->
+  <header class="chassis header">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <span>0</span><span>1</span><span>1</span><span>0</span>
+      </div>
+      <div>
+        <div class="brand-name">BIT<span>FLIP</span></div>
+        <div class="brand-sub">DCCN · P2P DATA LINK SIMULATOR</div>
+      </div>
+    </div>
+
+    <div class="node-plate">
+      <div class="plate-label">NODE</div>
+      <div class="plate-value" id="nodeName">—</div>
+    </div>
+
+    <div class="link-panel">
+      <div class="link-row">
+        <span class="led" id="ledOut" aria-hidden="true"></span>
+        <span class="link-tag">TX LINK</span>
+      </div>
+      <div class="link-row">
+        <span class="led" id="ledIn" aria-hidden="true"></span>
+        <span class="link-tag">RX LINK</span>
+      </div>
+      <div class="link-meta">
+        <span class="muted">PEER</span> <span id="peerAddr" class="mono">—</span>
+        <span class="link-state" id="linkText" role="status">CONNECTING…</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <span class="badge" id="codeBadge">CRC-16</span>
+      <span class="badge ghost" id="timing">t/o —</span>
+      <button class="btn" id="btnReset" type="button" title="Reset statistics and clear the views">
+        <span aria-hidden="true">⟲</span> RESET
+      </button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- ============================== TRANSMIT ============================== -->
+    <section class="chassis panel" aria-labelledby="h-send">
+      <h2 class="plate" id="h-send"><span class="led small cyan"></span>TRANSMIT</h2>
+      <form id="sendForm" class="send-form" autocomplete="off">
+        <div class="screen input-screen">
+          <label for="msgInput" class="sr-only">Message</label>
+          <textarea id="msgInput" rows="2" maxlength="4000"
+                    placeholder="Type a message for the peer…  (Enter = send, Shift+Enter = new line)"></textarea>
+          <div class="input-meta"><span id="byteCount">0 bytes</span><span id="frameCount">0 frames</span></div>
+        </div>
+        <div class="send-row">
+          <div class="chips" role="group" aria-label="Sample messages">
+            <button type="button" class="chip" data-sample="Hello from the other side!">Hello</button>
+            <button type="button" class="chip warn" data-sample="~~~" title="0x7E = 01111110: needs bit stuffing">~~~ stuff</button>
+            <button type="button" class="chip warn" data-sample="???" title="0x3F3F3F: runs of six 1s">??? stuff</button>
+            <button type="button" class="chip" data-sample="This is a deliberately long message that does not fit into one frame, so the sender must split it into several fragments and the receiver reassembles them in order.">Long · multi-frame</button>
+            <button type="button" class="chip" data-sample="नमस्ते दुनिया 🌐 ✓">Unicode</button>
+          </div>
+          <button class="btn primary" id="btnSend" type="submit">
+            TRANSMIT <span aria-hidden="true">➤</span>
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ============================== NOISE ============================== -->
+    <section class="chassis panel" aria-labelledby="h-noise">
+      <h2 class="plate" id="h-noise"><span class="led small" id="noiseLed"></span>CHANNEL NOISE</h2>
+      <div class="noise-grid">
+        <div class="control">
+          <span class="control-label">NOISE</span>
+          <label class="switch" title="Inject bit errors into outgoing DATA frames">
+            <input type="checkbox" id="noiseToggle">
+            <span class="switch-track"><span class="switch-knob"></span></span>
+            <span class="switch-text" id="noiseText">OFF</span>
+          </label>
+        </div>
+
+        <div class="control grow">
+          <label class="control-label" for="probSlider">FRAME ERROR PROBABILITY</label>
+          <div class="slider-row">
+            <input type="range" id="probSlider" min="0" max="1" step="0.05" value="0.3">
+            <output class="seg" id="probValue" for="probSlider">0.30</output>
+          </div>
+        </div>
+
+        <div class="control">
+          <span class="control-label">BITS TO FLIP</span>
+          <div class="stepper">
+            <button type="button" class="btn sq" id="bitsDown" aria-label="Fewer bits">−</button>
+            <output class="seg" id="bitsValue">1</output>
+            <button type="button" class="btn sq" id="bitsUp" aria-label="More bits">+</button>
+          </div>
+        </div>
+
+        <div class="control arm-row">
+          <button type="button" class="btn arm" id="btnDropFrame" title="The next DATA frame vanishes → sender timeout">
+            <span class="led small" aria-hidden="true"></span> DROP NEXT FRAME
+          </button>
+          <button type="button" class="btn arm" id="btnDropAck" title="The next ACK this node sends vanishes → duplicate at receiver">
+            <span class="led small" aria-hidden="true"></span> DROP NEXT ACK
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== FRAME SCOPE ============================== -->
+    <section class="chassis panel wide" aria-labelledby="h-scope">
+      <h2 class="plate" id="h-scope"><span class="led small violet"></span>FRAME SCOPE
+        <span class="legend">
+          <span class="lg"><i class="b s">0</i> stuffed</span>
+          <span class="lg"><i class="b f">1</i> flipped</span>
+          <span class="lg"><i class="b c">1</i> corrected</span>
+        </span>
+      </h2>
+      <div class="scope">
+        <div class="scope-half">
+          <div class="scope-title"><span class="arrow-tag tx">TX ➤</span> last frame this node put on the wire</div>
+          <div class="screen frame-screen" id="txView"><div class="empty">no frame transmitted yet</div></div>
+        </div>
+        <div class="scope-half">
+          <div class="scope-title"><span class="arrow-tag rx">◀ RX</span> last frame this node took off the wire</div>
+          <div class="screen frame-screen" id="rxView"><div class="empty">no frame received yet</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== TIMELINE ============================== -->
+    <section class="chassis panel tall" aria-labelledby="h-timeline">
+      <h2 class="plate" id="h-timeline"><span class="led small green"></span>ARQ TIMELINE</h2>
+      <div class="screen timeline-screen">
+        <div class="lanes-head">
+          <span id="laneMe">THIS NODE</span>
+          <span id="lanePeer">PEER</span>
+        </div>
+        <div class="timeline" id="timeline" aria-live="off"></div>
+      </div>
+      <div class="tl-legend">
+        <span class="k data">DATA</span><span class="k ack">ACK</span><span class="k nack">NACK</span>
+        <span class="k warn">TIMEOUT / RETX</span><span class="k lost">✕ LOST</span>
+      </div>
+    </section>
+
+    <!-- ============================== MESSAGES ============================== -->
+    <section class="chassis panel tall" aria-labelledby="h-msgs">
+      <h2 class="plate" id="h-msgs"><span class="led small cyan"></span>MESSAGES</h2>
+      <div class="screen messages" id="messages" aria-live="polite">
+        <div class="empty">delivered messages appear here</div>
+      </div>
+    </section>
+
+    <!-- ============================== STATS ============================== -->
+    <section class="chassis panel wide" aria-labelledby="h-stats">
+      <h2 class="plate" id="h-stats"><span class="led small amber"></span>LINK STATISTICS</h2>
+      <div class="stats-wrap">
+        <div class="gauge-box">
+          <svg class="gauge" viewBox="0 0 200 124" role="img" aria-labelledby="effLabel">
+            <defs>
+              <radialGradient id="hub" cx="40%" cy="35%" r="70%">
+                <stop offset="0" stop-color="#e8eef5"/><stop offset=".5" stop-color="#7d8896"/>
+                <stop offset="1" stop-color="#2a313b"/>
+              </radialGradient>
+            </defs>
+            <path class="g-track" d="M20 104 A80 80 0 0 1 180 104"/>
+            <path class="g-zone red" d="M20 104 A80 80 0 0 1 75.3 27.9"/>
+            <path class="g-zone amber" d="M75.3 27.9 A80 80 0 0 1 156.6 47.4"/>
+            <path class="g-zone green" d="M156.6 47.4 A80 80 0 0 1 180 104"/>
+            <g id="gaugeTicks"></g>
+            <g id="gaugeNeedle" class="needle">
+              <path d="M100 104 L97 100 L100 34 L103 100 Z"/>
+            </g>
+            <circle cx="100" cy="104" r="8" fill="url(#hub)"/>
+          </svg>
+          <div class="gauge-read">
+            <span class="seg big" id="effValue">—</span>
+            <span class="gauge-cap" id="effLabel">EFFICIENCY · acked ÷ sent</span>
+          </div>
+        </div>
+        <div class="stats" id="stats"></div>
+      </div>
+    </section>
+
+    <!-- ============================== EVENT LOG ============================== -->
+    <section class="chassis panel tall" aria-labelledby="h-log">
+      <h2 class="plate" id="h-log"><span class="led small"></span>EVENT LOG</h2>
+      <div class="log-tools">
+        <label class="sr-only" for="logFilter">Filter events</label>
+        <input type="search" id="logFilter" class="field" placeholder="filter…">
+        <label class="sr-only" for="logKind">Event category</label>
+        <select id="logKind" class="field">
+          <option value="all">all</option>
+          <option value="frames">frames</option>
+          <option value="arq">ARQ</option>
+          <option value="errors">errors</option>
+          <option value="link">link</option>
+        </select>
+        <label class="check"><input type="checkbox" id="autoScroll" checked> follow</label>
+      </div>
+      <div class="screen log" id="log" role="log"></div>
+    </section>
+
+    <!-- ============================== CRC LAB ============================== -->
+    <section class="chassis panel tall" aria-labelledby="h-crc">
+      <h2 class="plate" id="h-crc"><span class="led small magenta"></span>CRC-16 LAB</h2>
+      <form id="crcForm" class="crc-form" autocomplete="off">
+        <label class="sr-only" for="crcInput">Text for CRC division</label>
+        <input id="crcInput" class="field" maxlength="8" value="Hi" placeholder="1–8 chars">
+        <button class="btn" type="submit">DIVIDE</button>
+        <span class="muted small">G(x) = x¹⁶+x¹²+x⁵+1</span>
+      </form>
+      <pre class="screen crc-out" id="crcOut">mod-2 long division appears here</pre>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -177,6 +177,7 @@ class ParsedFrame:
     destuffed: str = ""               # after de-stuffing (still Hamming coded in that mode)
     removed_positions: list[int] = field(default_factory=list)
     coded_bits: str = ""
+    body: str = ""                    # TYPE|SEQ|LEN|PAYLOAD|CRC after decoding
     corrected_positions: list[int] = field(default_factory=list)   # indices in coded_bits
     corrected_blocks: list[int] = field(default_factory=list)      # Hamming block numbers
     remainder: str = ""
@@ -306,6 +307,7 @@ def parse_frame(raw: str, code: str = config.CODE_CRC) -> ParsedFrame:
         result.coded_bits = result.destuffed
         bits, result.corrected_positions, result.corrected_blocks = \
             channel_decode(result.destuffed, code)
+        result.body = bits
         minimum = config.HEADER_BITS + config.CRC_BITS
         if len(bits) < minimum:
             raise FrameError("structural", f"frame too short ({len(bits)} < {minimum} bits)")

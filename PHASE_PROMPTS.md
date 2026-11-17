@@ -114,7 +114,7 @@ When done: run all tests, give me a manual demo walkthrough for these scenarios:
 
 ---
 
-## PHASE 4 — Web Dashboard (SSE)
+## ~~PHASE 4 — Web Dashboard (SSE)~~ ✅ DONE
 
 ```
 Read CLAUDE.md again. PHASES 1–3 are done and working. This is PHASE 4 only. Do not change protocol behaviour — only add the visual layer.
@@ -134,13 +134,13 @@ When done: tell me exactly how to launch both nodes and open both dashboards, li
 ```
 
 **Your checklist:**
-- [ ] Both dashboards open side by side, status shows connected
-- [ ] Sending from the dashboard works; frame blocks + timeline animate
-- [ ] Noise toggle on the dashboard → red bits + NACK + retransmit visible
-- [ ] Drop frame / Drop ACK buttons show timeout and duplicate handling
-- [ ] Stats update live
+- [x] ~~Both dashboards open side by side, status shows connected~~
+- [x] ~~Sending from the dashboard works; frame blocks + timeline animate~~
+- [x] ~~Noise toggle on the dashboard → red bits + NACK + retransmit visible~~
+- [x] ~~Drop frame / Drop ACK buttons show timeout and duplicate handling~~
+- [x] ~~Stats update live~~
 - [ ] You can explain: what SSE is, why it's not used between nodes
-- [ ] Commit: "Phase 4: web dashboard"
+- [x] ~~Commit: "Phase 4: web dashboard"~~
 
 ---
 

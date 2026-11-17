@@ -111,12 +111,16 @@ class EventBus:
         self._subscribers: list[queue.Queue] = []
         self._listeners: list[Listener] = []
         self._backlog: collections.deque[dict] = collections.deque(maxlen=config.EVENT_BACKLOG)
+        self._next_id = 1
 
     # ---------------------------------------------------------------- publishing
     def emit(self, type_: str, **data: Any) -> dict:
         """Publish one event: stamp it, print it, and fan it out to every subscriber."""
         event = {"type": type_, "ts": time.time(), "node": self.node_name, **data}
+        event["summary"] = describe(event)
         with self._lock:
+            event["id"] = self._next_id     # lets a dashboard skip events it already has
+            self._next_id += 1
             if type_ != "stats":
                 self._backlog.append(event)
             subscribers = list(self._subscribers)
@@ -189,7 +193,7 @@ class EventBus:
         stamp = time.strftime("%H:%M:%S", time.localtime(event["ts"]))
         ms = int((event["ts"] % 1) * 1000)
         head = f"[{stamp}.{ms:03d}] {self.node_name} {event['type'].upper():<22}"
-        summary = describe(event)
+        summary = event.get("summary", "")
         bits_line = self._bits_line(event)
         text = f"{head} {summary}"
         if self.color and colour:
@@ -272,7 +276,7 @@ def describe(event: dict) -> str:
                                      f"{g('frames')} frame(s))",
         "message_acked": lambda: f"#{g('msg_id')} fully acknowledged by peer",
         "send_failed": lambda: f"#{g('msg_id')} {g('reason')}",
-        "noise_config": lambda: ", ".join(f"{k}={v}" for k, v in g("config", {}).items()),
+        "noise_config": lambda: _noise_summary(g("config", {})),
         "reset": lambda: "statistics and views cleared",
         "info": lambda: str(g("text", "")),
         "error": lambda: str(g("text", "")),
@@ -282,3 +286,14 @@ def describe(event: dict) -> str:
         return fn() if fn else ""
     except Exception:
         return ""
+
+
+def _noise_summary(cfg: dict) -> str:
+    """Short text for a noise_config event, e.g. 'noise ON  p=0.50  flip=2  [drop ACK armed]'."""
+    text = (f"noise {'ON' if cfg.get('enabled') else 'OFF'}  p={cfg.get('frame_error_prob', 0):.2f}"
+            f"  flip={cfg.get('bits_to_flip')}")
+    if cfg.get("drop_next_frame"):
+        text += "  [drop frame armed]"
+    if cfg.get("drop_next_ack"):
+        text += "  [drop ACK armed]"
+    return text
