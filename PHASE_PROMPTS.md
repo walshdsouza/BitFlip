@@ -51,7 +51,7 @@ When done: run the tests, show me exact commands to run two nodes, and explain i
 
 ---
 
-## PHASE 2 — CRC-16 + Noise Injector
+## ~~PHASE 2 — CRC-16 + Noise Injector~~ ✅ DONE
 
 ```
 Read CLAUDE.md again. PHASE 1 is done. This is PHASE 2 only.
@@ -73,12 +73,12 @@ When done: run all tests, give me manual test steps, and explain CRC long divisi
 ```
 
 **Your checklist:**
-- [ ] Noise off → all messages OK, "CRC OK"
-- [ ] `/noise on`, `/prob 1` → every frame shows red flipped bit + "CRC FAIL"
-- [ ] `/crcdemo Hi` shows the XOR division steps — try to follow it by hand once
-- [ ] Tests pass (including binascii match)
+- [x] ~~Noise off → all messages OK, "CRC OK"~~
+- [x] ~~`/noise on`, `/prob 1` → every frame shows red flipped bit + "CRC FAIL"~~
+- [x] ~~`/crcdemo Hi` shows the XOR division steps~~ — try to follow it by hand once
+- [x] ~~Tests pass (including binascii match)~~
 - [ ] You can explain: generator polynomial, why noise is added after the CRC
-- [ ] Commit: "Phase 2: CRC + noise"
+- [x] ~~Commit: "Phase 2: CRC + noise"~~
 
 ---
 

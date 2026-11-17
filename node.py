@@ -15,27 +15,38 @@ import os
 import sys
 import threading
 
-from dccn import config
+from dccn import config, crc
 from dccn.events import EventBus
-from dccn.framer import (FrameError, bits_to_text, build_frame, parse_frame, split_payload,
-                         text_to_bits)
+from dccn.framer import build_frame, parse_frame, split_payload, text_to_bits
+from dccn.noise import NoiseInjector
+from dccn.stats import Stats
 from dccn.transport import PeerTransport, PortInUseError
 
 HELP = """Commands:
   <text>            send a message to the peer
+  /noise on|off     switch channel noise on or off
+  /prob 0.5         probability that a DATA frame is corrupted (0..1)
+  /bits 2           number of bits flipped in a corrupted frame (1..8)
+  /drop             lose the next DATA frame in the channel
+  /stats            show statistics
+  /reset            reset statistics
+  /crcdemo <text>   show the CRC-16 long division for <text>
   /help             show this help
   /quit             exit"""
 
 
 class Node:
-    """One peer: wires the event bus, transport and protocol layers together."""
+    """One peer: wires the event bus, transport, noise and protocol layers together."""
 
     def __init__(self, name: str, listen_port: int, peer_host: str, peer_port: int,
                  delay: float = config.DEFAULT_DELAY, color: bool = True,
-                 bind_host: str = "0.0.0.0", echo: bool = True) -> None:
+                 bind_host: str = "0.0.0.0", echo: bool = True,
+                 noise: NoiseInjector | None = None) -> None:
         self.name = name
         self.delay = delay
         self.bus = EventBus(name, color=color, echo=echo)
+        self.stats = Stats(on_change=lambda snap: self.bus.emit("stats", stats=snap))
+        self.noise = noise or NoiseInjector()
         self._stop = threading.Event()
         self._send_seq = 0
         self._send_lock = threading.Lock()
@@ -60,7 +71,7 @@ class Node:
 
     # ------------------------------------------------------------------ sending
     def send_text(self, text: str) -> bool:
-        """Split a message into frames and send them (Phase 1: no ARQ yet)."""
+        """Split a message into frames and send them (Phase 2: no ARQ yet)."""
         data = text.encode("utf-8")
         if not data:
             self.bus.emit("error", text="empty message not sent")
@@ -84,33 +95,61 @@ class Node:
                               stuffed_body=frame.stuffed_positions,
                               count=len(frame.stuffed_positions))
                 self.pause()
-                if not self.transport.send_out(frame.wire):
+                self.stats.incr("frames_sent")
+                if self.noise.take_drop_frame():
+                    self.bus.emit("frame_dropped_by_noise", seq=frame.seq, kind=frame.kind)
+                    self._send_seq ^= 1
+                    continue
+                wire, flipped = self.noise.maybe_corrupt(frame.wire)
+                if flipped:
+                    self.bus.emit("noise_injected", positions=flipped, before=frame.wire,
+                                  after=wire, seq=frame.seq)
+                if not self.transport.send_out(wire):
                     self.bus.emit("send_failed", msg_id=0, reason="peer not connected")
                     return False
-                self.bus.emit("frame_sent", kind=frame.kind, seq=frame.seq, wire=frame.wire,
-                              stuffed=frame.wire_stuffed_positions, flipped=[],
-                              frag=i, nfrags=len(fragments))
+                self.bus.emit("frame_sent", kind=frame.kind, seq=frame.seq, wire=wire,
+                              stuffed=frame.wire_stuffed_positions, flipped=flipped,
+                              segments=frame.segments, frag=i, nfrags=len(fragments))
                 self._send_seq ^= 1
         return True
 
     # ------------------------------------------------------------------ receiving
     def _on_data_body(self, body: str) -> None:
-        """A frame arrived on the incoming link: de-stuff, parse, reassemble, deliver."""
+        """A frame arrived on the incoming link: de-stuff, verify CRC, reassemble, deliver."""
+        self.stats.incr("frames_received")
         self.bus.emit("frame_received_raw", bits=body, conn="incoming")
         self.pause()
         frame = parse_frame(body)
-        self.bus.emit("destuffed", bits=frame.destuffed, removed=frame.removed_positions)
+        if frame.destuffed:
+            self.bus.emit("destuffed", bits=frame.destuffed, removed=frame.removed_positions)
         if not frame.ok:
-            self.bus.emit("structural_error", reason=frame.error.reason)
+            self.stats.incr("crc_errors_detected")
+            if frame.error.kind == "crc":
+                self.bus.emit("crc_fail", remainder=frame.remainder, wire=frame.wire,
+                              segments=frame.segments)
+            else:
+                self.bus.emit("structural_error", reason=frame.error.reason, wire=frame.wire,
+                              segments=frame.segments)
             return
+        self.bus.emit("crc_ok", kind=frame.kind, seq=frame.seq, remainder=frame.remainder,
+                      wire=frame.wire, segments=frame.segments,
+                      stuffed=[p + 8 for p in frame.removed_positions])
+        self.stats.incr("frames_delivered")
         self._rx_buffer += frame.payload
         if frame.ftype == config.TYPE_DATA:
             data = bytes(self._rx_buffer)
             self._rx_buffer.clear()
+            self.stats.incr("messages_delivered")
             self.bus.emit("message_delivered", text=data.decode("utf-8", "replace"),
                           nbytes=len(data), frames=0)
 
     # ------------------------------------------------------------------ terminal
+    def set_noise(self, **settings) -> dict:
+        """Change noise settings (terminal or dashboard) and announce the new config."""
+        cfg = self.noise.update(**settings)
+        self.bus.emit("noise_config", config=cfg)
+        return cfg
+
     def handle_line(self, line: str) -> bool:
         """Process one line typed in the terminal. Returns False when the node should quit."""
         line = line.strip()
@@ -119,13 +158,32 @@ class Node:
         if not line.startswith("/"):
             threading.Thread(target=self.send_text, args=(line,), daemon=True).start()
             return True
-        cmd = line.split()[0].lower()
-        if cmd == "/quit":
-            return False
-        if cmd == "/help":
-            self.bus.print_line(HELP)
-        else:
-            self.bus.print_line(f"unknown command {cmd!r} - type /help")
+        cmd, _, arg = line.partition(" ")
+        cmd, arg = cmd.lower(), arg.strip()
+        try:
+            if cmd == "/quit":
+                return False
+            if cmd == "/help":
+                self.bus.print_line(HELP)
+            elif cmd == "/noise" and arg.lower() in ("on", "off"):
+                self.set_noise(enabled=arg.lower() == "on")
+            elif cmd == "/prob" and arg:
+                self.set_noise(frame_error_prob=float(arg))
+            elif cmd == "/bits" and arg:
+                self.set_noise(bits_to_flip=int(arg))
+            elif cmd == "/drop":
+                self.set_noise(drop_next_frame=True)
+            elif cmd == "/stats":
+                self.bus.print_line("Statistics:\n" + self.stats.format_table())
+            elif cmd == "/reset":
+                self.stats.reset()
+                self.bus.print_line("statistics reset")
+            elif cmd == "/crcdemo" and arg:
+                self.bus.print_line(crc.format_division(text_to_bits(arg)))
+            else:
+                self.bus.print_line(f"unknown or incomplete command {line!r} - type /help")
+        except ValueError as exc:
+            self.bus.print_line(f"invalid value: {exc}")
         return True
 
 

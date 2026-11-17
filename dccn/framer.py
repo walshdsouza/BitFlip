@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import config
+from . import config, crc
 
 # ======================================================================================
 # Bits <-> bytes <-> text
@@ -138,21 +138,6 @@ def destuff_bits(bits: str) -> tuple[str, list[int]]:
 
 
 # ======================================================================================
-# Error-detection code hook (placeholder until Phase 2)
-# ======================================================================================
-
-
-def compute_crc(bits: str) -> str:
-    """Return the 16-bit CRC of ``bits``. PHASE 1 PLACEHOLDER: always 16 zeros."""
-    return "0" * config.CRC_BITS
-
-
-def crc_remainder(codeword: str) -> str:
-    """Remainder of the whole codeword (all zeros = no error detected). Placeholder."""
-    return "0" * config.CRC_BITS
-
-
-# ======================================================================================
 # Frame building / parsing
 # ======================================================================================
 
@@ -260,11 +245,11 @@ def build_frame(ftype: int, seq: int, payload: bytes = b"") -> BuiltFrame:
     header = (int_to_bits(ftype, config.TYPE_BITS) + int_to_bits(seq, config.SEQ_BITS)
               + int_to_bits(len(payload), config.LEN_BITS))
     payload_bits = bytes_to_bits(payload)
-    crc = compute_crc(header + payload_bits)
-    body = header + payload_bits + crc
+    crc_bits = crc.crc16_bits(header + payload_bits)
+    body = header + payload_bits + crc_bits
     stuffed, positions = stuff_bits(body)
     wire = config.FLAG + stuffed + config.FLAG
-    frame = BuiltFrame(ftype, seq, payload, header, payload_bits, crc, body, stuffed,
+    frame = BuiltFrame(ftype, seq, payload, header, payload_bits, crc_bits, body, stuffed,
                        positions, wire)
     frame.segments = wire_segments(field_labels(len(payload)), positions)
     return frame
@@ -287,7 +272,7 @@ def parse_frame(raw: str) -> ParsedFrame:
         if len(bits) % 8:
             raise FrameError("structural", f"frame is {len(bits)} bits, not a whole "
                                            f"number of bytes")
-        result.remainder = crc_remainder(bits)
+        result.remainder = crc.remainder(bits)
         if "1" in result.remainder:
             raise FrameError("crc", f"CRC remainder {result.remainder} is not zero")
         result.ftype = int(bits[0:8], 2)
