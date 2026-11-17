@@ -273,6 +273,7 @@ def describe(event: dict) -> str:
         "message_acked": lambda: f"#{g('msg_id')} fully acknowledged by peer",
         "send_failed": lambda: f"#{g('msg_id')} {g('reason')}",
         "noise_config": lambda: ", ".join(f"{k}={v}" for k, v in g("config", {}).items()),
+        "reset": lambda: "statistics and views cleared",
         "info": lambda: str(g("text", "")),
         "error": lambda: str(g("text", "")),
     }

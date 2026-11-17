@@ -82,7 +82,7 @@ When done: run all tests, give me manual test steps, and explain CRC long divisi
 
 ---
 
-## PHASE 3 — Stop-and-Wait ARQ
+## ~~PHASE 3 — Stop-and-Wait ARQ~~ ✅ DONE
 
 ```
 Read CLAUDE.md again. PHASES 1–2 are done. This is PHASE 3 only.
@@ -103,12 +103,12 @@ When done: run all tests, give me a manual demo walkthrough for these scenarios:
 ```
 
 **Your checklist:**
-- [ ] All 4 scenarios work in the terminal and you can see each step
-- [ ] Message is never delivered twice, even with /dropack
-- [ ] Long message arrives complete and in order
-- [ ] Tests pass
+- [x] ~~All 4 scenarios work in the terminal and you can see each step~~
+- [x] ~~Message is never delivered twice, even with /dropack~~
+- [x] ~~Long message arrives complete and in order~~
+- [x] ~~Tests pass~~
 - [ ] You can explain: ACK vs NACK vs timeout, why SEQ 0/1 is enough for Stop-and-Wait
-- [ ] Commit: "Phase 3: Stop-and-Wait ARQ"
+- [x] ~~Commit: "Phase 3: Stop-and-Wait ARQ"~~
 
 **At this point you have a complete, submittable project.** Phases 4–5 are the visual layer and polish.
 

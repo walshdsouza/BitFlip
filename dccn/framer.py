@@ -152,8 +152,9 @@ class BuiltFrame:
     header_bits: str
     payload_bits: str
     crc_bits: str
-    body_bits: str            # header + payload + CRC (before stuffing)
-    stuffed_bits: str         # body after stuffing (what goes between the flags)
+    body_bits: str            # header + payload + CRC (before channel coding / stuffing)
+    coded_bits: str           # body after optional Hamming(7,4) encoding
+    stuffed_bits: str         # after stuffing (what goes between the flags)
     stuffed_positions: list[int]   # inserted zeros, indices inside stuffed_bits
     wire: str                 # FLAG + stuffed_bits + FLAG
     segments: list[dict] = field(default_factory=list)  # field map of the wire bits
@@ -173,8 +174,11 @@ class ParsedFrame:
     """Result of parsing one received frame body. ``error`` is None when the frame is good."""
 
     raw: str                          # stuffed bits between the flags, as received
-    destuffed: str = ""
+    destuffed: str = ""               # after de-stuffing (still Hamming coded in that mode)
     removed_positions: list[int] = field(default_factory=list)
+    coded_bits: str = ""
+    corrected_positions: list[int] = field(default_factory=list)   # indices in coded_bits
+    corrected_blocks: list[int] = field(default_factory=list)      # Hamming block numbers
     remainder: str = ""
     ftype: int | None = None
     seq: int | None = None
@@ -196,11 +200,28 @@ class ParsedFrame:
     def wire(self) -> str:
         return config.FLAG + self.raw + config.FLAG
 
+    @property
+    def corrected_raw_positions(self) -> list[int]:
+        """Hamming-corrected bits as indices into ``raw`` (skipping removed stuffed zeros)."""
+        if not self.corrected_positions:
+            return []
+        removed = set(self.removed_positions)
+        kept = [i for i in range(len(self.raw)) if i not in removed]
+        return [kept[p] for p in self.corrected_positions if p < len(kept)]
 
-def field_labels(payload_len: int) -> list[str]:
-    """Name of the field each body bit belongs to (TYPE, SEQ, LEN, PAYLOAD, CRC)."""
-    return (["TYPE"] * config.TYPE_BITS + ["SEQ"] * config.SEQ_BITS + ["LEN"] * config.LEN_BITS
-            + ["PAYLOAD"] * (payload_len * 8) + ["CRC"] * config.CRC_BITS)
+
+def field_labels(payload_len: int, code: str = config.CODE_CRC) -> list[str]:
+    """Name of the field each coded body bit belongs to (TYPE, SEQ, LEN, PAYLOAD, CRC).
+
+    In Hamming mode every 4 data bits become 7 coded bits; each 7-bit block belongs to the
+    field of its 4 data bits (all fields are whole nibbles, so blocks never straddle).
+    """
+    labels = (["TYPE"] * config.TYPE_BITS + ["SEQ"] * config.SEQ_BITS
+              + ["LEN"] * config.LEN_BITS + ["PAYLOAD"] * (payload_len * 8)
+              + ["CRC"] * config.CRC_BITS)
+    if code == config.CODE_HAMMING:
+        labels = [labels[(j // 7) * 4] for j in range(len(labels) // 4 * 7)]
+    return labels
 
 
 def wire_segments(body_labels: list[str], stuffed_positions: list[int]) -> list[dict]:
@@ -230,11 +251,27 @@ def wire_segments(body_labels: list[str], stuffed_positions: list[int]) -> list[
     return segments
 
 
-def build_frame(ftype: int, seq: int, payload: bytes = b"") -> BuiltFrame:
+def channel_encode(body: str, code: str) -> str:
+    """Optional forward error correction applied after the CRC (Hamming bonus mode)."""
+    if code == config.CODE_CRC:
+        return body
+    raise ValueError(f"unknown code {code!r}")
+
+
+def channel_decode(bits: str, code: str) -> tuple[str, list[int], list[int]]:
+    """Undo :func:`channel_encode`. Returns (body, corrected positions, corrected blocks)."""
+    if code == config.CODE_CRC:
+        return bits, [], []
+    raise ValueError(f"unknown code {code!r}")
+
+
+def build_frame(ftype: int, seq: int, payload: bytes = b"",
+                code: str = config.CODE_CRC) -> BuiltFrame:
     """Build a complete frame ready for the wire.
 
-    Steps: TYPE|SEQ|LEN header + payload bits -> append CRC-16 -> bit-stuff -> add flags.
-    ACK/NACK frames have LEN = 0 and no payload but still carry a CRC.
+    Steps: TYPE|SEQ|LEN header + payload bits -> append CRC-16 -> (Hamming encode)
+    -> bit-stuff -> add flags. ACK/NACK frames have LEN = 0 and no payload but still
+    carry a CRC.
     """
     if ftype not in config.TYPE_NAMES:
         raise ValueError(f"unknown frame type {ftype}")
@@ -247,25 +284,28 @@ def build_frame(ftype: int, seq: int, payload: bytes = b"") -> BuiltFrame:
     payload_bits = bytes_to_bits(payload)
     crc_bits = crc.crc16_bits(header + payload_bits)
     body = header + payload_bits + crc_bits
-    stuffed, positions = stuff_bits(body)
+    coded = channel_encode(body, code)
+    stuffed, positions = stuff_bits(coded)
     wire = config.FLAG + stuffed + config.FLAG
-    frame = BuiltFrame(ftype, seq, payload, header, payload_bits, crc_bits, body, stuffed,
-                       positions, wire)
-    frame.segments = wire_segments(field_labels(len(payload)), positions)
+    frame = BuiltFrame(ftype, seq, payload, header, payload_bits, crc_bits, body, coded,
+                       stuffed, positions, wire)
+    frame.segments = wire_segments(field_labels(len(payload), code), positions)
     return frame
 
 
-def parse_frame(raw: str) -> ParsedFrame:
+def parse_frame(raw: str, code: str = config.CODE_CRC) -> ParsedFrame:
     """Parse the stuffed bits found between two flags. Never raises; sets ``error``.
 
-    Order: de-stuff -> structural checks -> CRC check -> field split -> LEN check.
-    Any structural failure (bad stuffing, wrong size, unknown type, bad SEQ, LEN mismatch)
-    or a non-zero CRC remainder marks the frame as corrupted.
+    Order: de-stuff -> (Hamming decode/correct) -> structural checks -> CRC check ->
+    field split -> LEN check. Any structural failure (bad stuffing, wrong size, unknown
+    type, bad SEQ, LEN mismatch) or a non-zero CRC remainder marks the frame as corrupted.
     """
     result = ParsedFrame(raw=raw)
     try:
         result.destuffed, result.removed_positions = destuff_bits(raw)
-        bits = result.destuffed
+        result.coded_bits = result.destuffed
+        bits, result.corrected_positions, result.corrected_blocks = \
+            channel_decode(result.destuffed, code)
         minimum = config.HEADER_BITS + config.CRC_BITS
         if len(bits) < minimum:
             raise FrameError("structural", f"frame too short ({len(bits)} < {minimum} bits)")
@@ -287,7 +327,7 @@ def parse_frame(raw: str) -> ParsedFrame:
             raise FrameError("structural", f"LEN says {length} bytes but payload has "
                                            f"{len(payload_bits) // 8}")
         result.payload = bits_to_bytes(payload_bits)
-        result.segments = wire_segments(field_labels(length), result.removed_positions)
+        result.segments = wire_segments(field_labels(length, code), result.removed_positions)
     except FrameError as err:
         result.error = err
         if not result.segments:
